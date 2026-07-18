@@ -1,0 +1,121 @@
+name: Build ma03 and ma04 arm64 Kernel
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+    paths:
+      - "arch/**"
+      - "drivers/**"
+      - "fs/**"
+      - "include/**"
+      - "init/**"
+      - "kernel/**"
+      - "lib/**"
+      - "mm/**"
+      - "net/**"
+      - "scripts/**"
+      - "security/**"
+      - "Makefile"
+      - "Kconfig"
+      - ".github/workflows/kernel-build.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build kernel (${{ matrix.variant }})
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: ma03
+            defconfig: ma03_defconfig
+          - variant: ma04
+            defconfig: ma04_defconfig
+
+    env:
+      ARCH: arm64
+      SUBARCH: arm64
+      CROSS_COMPILE: aarch64-linux-gnu-
+      KBUILD_BUILD_USER: github-actions
+      KBUILD_BUILD_HOST: github-actions
+      KCONFIG_NOTIMESTAMP: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          set -e
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            bc \
+            bison \
+            flex \
+            libssl-dev \
+            libelf-dev \
+            dwarves \
+            python3 \
+            perl \
+            rsync \
+            git \
+            gcc-aarch64-linux-gnu \
+            binutils-aarch64-linux-gnu
+
+      - name: Verify defconfig
+        run: |
+          set -e
+          test -f arch/arm64/configs/${{ matrix.defconfig }}
+          echo "Variant: ${{ matrix.variant }}"
+          echo "Defconfig: ${{ matrix.defconfig }}"
+
+      - name: Create out directory
+        run: |
+          set -e
+          mkdir -p out
+
+      - name: Configure kernel
+        run: |
+          set -e
+          make O=out ${{ matrix.defconfig }}
+          make O=out olddefconfig
+
+      - name: Build kernel image, modules and dtbs
+        run: |
+          set -e
+          make O=out -j"$(nproc)" Image modules dtbs
+
+      - name: Package artifacts
+        run: |
+          set -e
+          mkdir -p artifacts/${{ matrix.variant }}
+
+          if [ -f out/arch/arm64/boot/Image ]; then
+            cp -v out/arch/arm64/boot/Image artifacts/${{ matrix.variant }}/Image
+          fi
+
+          if [ -d out/arch/arm64/boot/dts ]; then
+            find out/arch/arm64/boot/dts -name '*.dtb' -exec cp -v {} artifacts/${{ matrix.variant }}/ \;
+          fi
+
+          if [ -d out ]; then
+            find out -name '*.ko' -exec cp -v --parents {} artifacts/${{ matrix.variant }}/ \;
+          fi
+
+          tar -czf artifacts/kernel-${{ matrix.variant }}.tar.gz -C artifacts ${{ matrix.variant }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-${{ matrix.variant }}
+          path: artifacts/kernel-${{ matrix.variant }}.tar.gz
+          if-no-files-found: error
+          retention-days: 14
